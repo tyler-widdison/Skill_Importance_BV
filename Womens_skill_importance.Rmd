@@ -160,7 +160,7 @@ final_res %>%
 # Attack errors and Block stuffs exploration  
 These plots explore the two most important rally ending stats in this model. 
 
-```{r EDA of blk stuff & atk error, echo=FALSE, fig.width=8, fig.height=6}
+```{r EDA of atk kill & atk error, echo=FALSE, fig.width=8, fig.height=6}
 
 df2$date <- as.Date(df2$date)
 df2$team_finish <- as.integer(as.character(df2$team_finish))
