@@ -1,0 +1,189 @@
+---
+title: "Monday Montage"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(vip)
+library(tidymodels)
+knitr::opts_chunk$set(echo = TRUE)
+df <- read.csv('final_set_mon.csv')
+```
+
+```{r data wrangle, include=FALSE}
+#I want these phases of a tournament. 
+df$teamname <- as.character(df$teamname)
+winners <- 
+  df %>% 
+  filter(name != '', gender == 'M', star %in% c('4*', '5*', 'WC', 'WTF'), phase %in% c('Pool B','Round 2','Pool C','Round 1','Final 1st Place','Round 3','Pool G','Pool D','Pool F','Semifinals','Pool E','Pool A','Final 3rd Place','Pool H','Finals 1st Place','Finals 3rd Place','Round of 32','Round of 16','Quarterfinals','Pool L','Pool I','Pool J','Pool K','Finals')) %>%
+  group_by(match_id, teamname, teammatchwon, phase, team_finish, date) %>%
+  summarise(Attack_Kill = sum(descrption == 'attack' & grade == '#'),
+            Attack_Error = sum(descrption == 'attack' & grade == '='),
+            Serve_Ace = sum(descrption == 'serve' & grade == '#'),
+            Serve_Error = sum(descrption == 'serve' & grade == '='),
+            Block_Stuff = sum(descrption == 'block' & grade == '#')) %>% #,  
+  filter(teammatchwon == 1) %>% mutate(win = 'win') %>% ungroup()
+
+
+losers <- 
+  df %>% 
+  filter(name != '', gender == 'M', star %in% c('4*', '5*', 'WC', 'WTF'), phase %in% c('Pool B','Round 2','Pool C','Round 1','Final 1st Place','Round 3','Pool G','Pool        D','Pool F','Semifinals','Pool E','Pool A','Final 3rd Place','Pool H','Finals 1st Place','Finals 3rd Place','Round of 32','Round of 16','Quarterfinals','Pool L','Pool     I','Pool J','Pool K','Finals')) %>%
+  group_by(match_id, teamname, teammatchwon, phase, team_finish, date) %>%
+  summarise(Attack_Kill = sum(descrption == 'attack' & grade == '#'),
+            Attack_Error = sum(descrption == 'attack' & grade == '='),
+            Serve_Ace = sum(descrption == 'serve' & grade == '#'),
+            Serve_Error = sum(descrption == 'serve' & grade == '='),
+            Block_Stuff = sum(descrption == 'block' & grade == '#')) %>% #,  
+  filter(teammatchwon == 0) %>% mutate(win = 'lose') %>% ungroup()
+
+
+df2 <- bind_rows(winners, losers) 
+  
+vb_df <- df2 %>% dplyr::select(Attack_Kill, Attack_Error,Serve_Ace, Serve_Error, Block_Stuff, win) %>%
+  mutate_if(is.character, factor)
+
+```
+
+
+## Rally ending skill importance
+
+This past week I have put fourth efforts into supervised machine learning. 
+
+*"Supervised learning is where you have input variables (x) and an output variable (Y) and you use an algorithm to learn the mapping function from the input to the output. The goal is to approximate the mapping function so well that when you have new input data (x) that you can predict the output variables (Y) for that data." * 
+
+Here is what my (x) and (Y) considers:  
+
+* I am looking at main draw matches won vs lost from 4 star, 5 star, WTF, and WCH. This is my (Y) or output variable.
+* I am looking at these rally ending skills. This is my (x) or input variables:
+  + Attack Kills
+  + Attack Errors
+  + Serve Ace
+  + Serve Error
+  + Block Stuff
+  
+ You can read more about supervised machine learning if your interested <https://machinelearningmastery.com/supervised-and-unsupervised-machine-learning-algorithms/>.
+
+# Men's rally ending skill exploration
+
+This data set includes 1,026 matches, played in main draw, from the 2019-2020 season (HAG 2019 - DOH 2020). Rally ending skills for 4 star, 5 star, World Championships and World Tour Final. 
+
+```{r Mens skill importance EDA, echo=FALSE, fig.width=8, fig.height=6}
+vb_df %>%
+  pivot_longer(Attack_Kill:Block_Stuff, names_to = 'stat', values_to = 'value') %>%
+  ggplot(aes(value, win, fill = win, color = win)) +
+  geom_violin(alpha = 0.4) +
+  geom_boxplot(color = 'black', width = 0.1) +
+  facet_wrap(~stat, scales = "free_y", nrow = 2) +
+  labs(y = NULL, color = NULL, fill = NULL) + 
+  coord_flip() + scale_fill_discrete('', labels = c('Lost match', 'Won match')) + scale_color_discrete('', labels = c('Lost match', 'Won match')) +
+  ggtitle("Rally ending skills vs teams winning or losing in 2019-2020 Men's Main Draw matches")
+```
+
+# Plot of importance  
+*This in no way implies the variables that occur within these 5 rally ending skills.* For example maybe my team got stuffed blocked because I threw a terrible set to my partner or it is insanley windy one day and my partners set caused me to attack in the net. Maybe the serve ace was a trickler or 3 of the 7 attack kills I got were digs or passes over the net. Plus other variables. This becomes more of a starting point of what to look at next in depth. 
+```{r Mens rally ending skill importance, echo=FALSE, fig.width=8, fig.height=6}
+set.seed(123)
+vb_split <- rsample::initial_split(vb_df, strata = win)
+vb_train <- rsample::training(vb_split)
+vb_test <- rsample::testing(vb_split)
+
+xgb_spec <- parsnip::boost_tree(
+  trees = 1000, 
+  tree_depth = tune(), min_n = tune(), 
+  loss_reduction = tune(),                     ## first three: model complexity
+  sample_size = tune(), mtry = tune(),         ## randomness
+  learn_rate = tune(),                         ## step size
+) %>% 
+  parsnip::set_engine("xgboost") %>% 
+  parsnip::set_mode("classification")
+
+xgb_grid <- dials::grid_latin_hypercube(
+  tree_depth(),
+  min_n(),
+  loss_reduction(),
+  sample_size = sample_prop(),
+  finalize(mtry(), vb_train),
+  learn_rate(),
+  size = 50
+)
+
+xgb_wf <- workflow() %>%
+  add_formula(win ~ .) %>%
+  add_model(xgb_spec)
+
+set.seed(123)
+vb_folds <- vfold_cv(vb_train, strata = win)
+
+
+set.seed(234)
+xgb_res <- tune_grid(
+  xgb_wf,
+  resamples = vb_folds,
+  grid = xgb_grid,
+  control = control_grid(save_pred = TRUE)
+)
+
+collect_metrics(xgb_res)
+best_auc <- select_best(xgb_res, "roc_auc")
+
+final_xgb <- finalize_workflow(
+  xgb_wf,
+  best_auc
+)
+
+final_xgb %>%
+  fit(data = vb_train) %>%
+  pull_workflow_fit() %>%
+  vip(geom = "point")
+
+
+final_res <- last_fit(final_xgb, vb_split)
+
+final_res %>%
+  collect_predictions() %>%
+  roc_curve(win, .pred_win) %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_line(size = 1.5, color = "midnightblue") +
+  geom_abline(
+    lty = 2, alpha = 0.5,
+    color = "gray50",
+    size = 1.2
+  )
+
+
+```
+
+# Attack errors and Block stuffs exploration  
+These plots explore the two most important rally ending stats in this model. 
+
+```{r EDA of blk stuff & atk error, echo=FALSE, fig.width=8, fig.height=6}
+
+df2$date <- as.Date(df2$date)
+df2$team_finish <- as.integer(as.character(df2$team_finish))
+
+df2 %>% 
+  pivot_longer(cols = c('Block_Stuff','Attack_Error')) %>% 
+    ggplot(aes(value, name)) + 
+    geom_col(aes(fill = win),position = 'fill') + 
+    geom_vline(xintercept = .50, linetype = 'dashed') +
+    ggtitle('Block stuffs and attack errors vs match outcomes') + 
+    xlab('') + ylab('') +
+    scale_fill_discrete('', labels = c('Lost match', 'Won match'))
+
+df2 %>% 
+  filter(teammatchwon == 1, team_finish %in% c(1)) %>%  
+  group_by(date, team_finish, match_id) %>% summarise(Attack_Error = sum(Attack_Error), Block_Stuff = sum(Block_Stuff)) %>%
+  pivot_longer(cols = c('Block_Stuff','Attack_Error')) %>% 
+    ggplot(aes(date, value, colour = name)) + geom_point()+
+    geom_smooth(se = F)+
+    scale_x_date(labels = date_format("%m/%d/%Y"), breaks = date_breaks('months')) + 
+    theme(axis.text.x = element_text(angle=45)) + 
+    ggtitle('First place finish teams over the course of 2019-2020') + 
+    geom_hline(yintercept = 5.23, color = 'cyan3', linetype = 'dashed') + xlab('Date') + ylab('Number of Attack Errors or Attack Kills') + 
+    geom_hline(yintercept = 3.32, color = 'salmon', linetype = 'dashed')+theme(legend.title=element_blank())
+ 
+#df %>% dplyr::select(attack_combo, teamname, grade, descrption, rally_phase, ac, np, match_id, details, gender, xycoordinate) %>% filter(xycoordinate %in% c('2A', '2B', '2C', '2D', '3A', '3B', '3C', '3D', '9A', '9B', '9C', '9D', '8A', '8B', '8C', '8D'), details == 'shot',gender == 'W', descrption == 'attack', !is.na(teamname)) %>% mutate(next_ac = lead(ac), next_rally_phase = lead(rally_phase)) %>% filter(next_ac == 'C', np %in% c(4:5), next_rally_phase == 'Trans')
+```
